@@ -44,6 +44,11 @@ node bot.js
 ```
 6. Fitur tambahan auto send dari wallet yg sudah melakukan faucet ke wallet yg di tentukan
 ```
-nano bot.js
+nano send.js
 ```
 ganti 0xwallettarget menjadi wallet kamu
+
+Run autosend
+```
+node send.js
+```
