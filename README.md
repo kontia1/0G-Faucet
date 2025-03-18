@@ -42,3 +42,8 @@ Jika tidak menggunakan proxy, bot tetap dapat berjalan.
 ```
 node bot.js
 ```
+6. Fitur tambahan auto send dari wallet yg sudah melakukan faucet ke wallet yg di tentukan
+```
+nano bot.js
+```
+ganti 0xwallettarget menjadi wallet kamu
