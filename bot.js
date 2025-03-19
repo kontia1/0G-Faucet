@@ -2,12 +2,13 @@ const axios = require('axios');
 const fs = require('fs');
 const { ethers } = require('ethers');
 const { HttpsProxyAgent } = require('https-proxy-agent');
-const prompt = require('prompt-sync')(); // ✅ Import prompt-sync untuk input manual
+const prompt = require('prompt-sync')();
 
 const FAUCET_URL = 'https://faucet.0g.ai/api/faucet';
-const CAPTCHA_API_KEY = '2captchaAPI'; // Replace with your 2Captcha API Key
-const SITE_KEY = '914e63b4-ac20-4c24-bc92-cdb6950ccfde'; // hCaptcha site key from the faucet
-const PROXY_LIST_FILE = 'proxy.txt'; // File containing proxy list
+const CAPTCHA_API_KEY = '2captchaAPI'; // Ganti dengan API Key 2Captcha
+const SITE_KEY = '914e63b4-ac20-4c24-bc92-cdb6950ccfde'; // hCaptcha site key dari faucet
+const PROXY_LIST_FILE = 'proxy.txt';
+const USED_PROXIES = new Set();
 
 const HEADERS = {
     'Accept': '*/*',
@@ -17,7 +18,6 @@ const HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36'
 };
 
-// Input manual jumlah akun
 let NUM_ACCOUNTS;
 while (true) {
     NUM_ACCOUNTS = parseInt(prompt("Masukkan jumlah akun yang ingin dibuat: "));
@@ -25,29 +25,28 @@ while (true) {
     console.log("Harap masukkan angka yang valid!");
 }
 
-// Load proxies from file
-const proxies = fs.existsSync(PROXY_LIST_FILE) ? fs.readFileSync(PROXY_LIST_FILE, 'utf-8').split('\n').map(p => p.trim()).filter(p => p) : [];
+// Load proxies
+let proxies = fs.existsSync(PROXY_LIST_FILE) ? fs.readFileSync(PROXY_LIST_FILE, 'utf-8').split('\n').map(p => p.trim()).filter(p => p) : [];
 
-// Function to get a random proxy
-function getRandomProxy() {
-    if (proxies.length === 0) return null;
-    return proxies[Math.floor(Math.random() * proxies.length)];
+function getAvailableProxy() {
+    const availableProxies = proxies.filter(p => !USED_PROXIES.has(p));
+    if (availableProxies.length === 0) return null;
+    const proxy = availableProxies[Math.floor(Math.random() * availableProxies.length)];
+    USED_PROXIES.add(proxy);
+    return proxy;
 }
 
-// Function to solve hCaptcha using 2Captcha (Tanpa Proxy)
 async function solveCaptcha() {
     try {
-        // Step 1: Request captcha solving (Tanpa Proxy)
         const response = await axios.get(`http://2captcha.com/in.php?key=${CAPTCHA_API_KEY}&method=hcaptcha&sitekey=${SITE_KEY}&pageurl=https://faucet.0g.ai&json=1`);
         if (response.data.status !== 1) throw new Error('Failed to send captcha to 2Captcha');
 
         const requestId = response.data.request;
         console.log(`Captcha sent to 2Captcha, Request ID: ${requestId}`);
 
-        // Step 2: Wait for the captcha to be solved
         let captchaResponse;
         while (true) {
-            await new Promise(resolve => setTimeout(resolve, 5000)); // Wait 5 seconds
+            await new Promise(resolve => setTimeout(resolve, 5000));
             const result = await axios.get(`http://2captcha.com/res.php?key=${CAPTCHA_API_KEY}&action=get&id=${requestId}&json=1`);
             if (result.data.status === 1) {
                 captchaResponse = result.data.request;
@@ -56,7 +55,7 @@ async function solveCaptcha() {
             console.log('Waiting for captcha solution...');
         }
 
-        console.log(`Captcha solved: ${captchaResponse}`);
+        console.log(`Captcha solved successfully`);
         return captchaResponse;
     } catch (error) {
         console.error('Error solving captcha:', error.message);
@@ -64,43 +63,59 @@ async function solveCaptcha() {
     }
 }
 
+async function claimFaucet(walletAddress, hcaptchaToken, useProxy = true) {
+    let proxy = useProxy ? getAvailableProxy() : null;
+    let retries = 3;
+    while (retries > 0) {
+        try {
+            console.log(`Using proxy: ${proxy || 'None'}`);
+            const agent = proxy ? new HttpsProxyAgent(proxy) : undefined;
+
+            const response = await axios.post(FAUCET_URL, {
+                address: walletAddress,
+                hcaptchaToken: hcaptchaToken
+            }, { headers: HEADERS, httpsAgent: agent, timeout: 5000 }); // Timeout 5 detik
+
+            console.log(`Faucet Response for ${walletAddress}:`, response.data);
+            return response.data;
+        } catch (error) {
+            console.error(`Error with proxy ${proxy}:`, error.response ? error.response.data : error.message);
+            if (proxy) USED_PROXIES.add(proxy);
+            proxy = getAvailableProxy();
+            retries--;
+        }
+    }
+    return null;
+}
+
 (async () => {
     for (let i = 0; i < NUM_ACCOUNTS; i++) {
-        // Generate a new Ethereum wallet
         const wallet = ethers.Wallet.createRandom();
         const walletAddress = wallet.address;
         const privateKey = wallet.privateKey;
 
-        // Save private key to wallet.txt
         fs.appendFileSync('wallet.txt', `${walletAddress} - ${privateKey}\n`);
         console.log(`Generated Address ${i + 1}: ${walletAddress}`);
-        console.log(`Private Key saved to wallet.txt`);
 
-        // Solve hCaptcha (Tanpa Proxy)
-        const hcaptchaToken = await solveCaptcha();
+        let hcaptchaToken = await solveCaptcha();
         if (!hcaptchaToken) {
             console.error('Failed to solve hCaptcha. Skipping...');
             continue;
         }
 
-        // Select a random proxy for claiming faucet
-        const proxy = getRandomProxy();
-        console.log(`Using proxy for claim: ${proxy || 'None'}`);
+        let response = await claimFaucet(walletAddress, hcaptchaToken, true);
 
-        // Claim faucet (Menggunakan Proxy)
-        try {
-            const agent = proxy ? new HttpsProxyAgent(proxy) : undefined;
-            const response = await axios.post(FAUCET_URL, {
-                address: walletAddress,
-                hcaptchaToken: hcaptchaToken
-            }, { headers: HEADERS, httpsAgent: agent });
-
-            console.log(`Faucet Response for ${walletAddress}:`, response.data);
-        } catch (error) {
-            console.error(`Error claiming for ${walletAddress}:`, error.response ? error.response.data : error.message);
+        // Jika gagal akibat Captcha, coba ulangi dengan token baru tanpa proxy
+        if (!response || (response.message && response.message.includes('Invalid Captcha'))) {
+            console.log(`Invalid Captcha detected. Solving new Captcha...`);
+            hcaptchaToken = await solveCaptcha();
+            if (!hcaptchaToken) {
+                console.error('Failed to solve new Captcha. Skipping...');
+                continue;
+            }
+            response = await claimFaucet(walletAddress, hcaptchaToken, false);
         }
 
-        // Wait 10 seconds before processing the next wallet
         console.log('Waiting 10 seconds before next claim...');
         await new Promise(resolve => setTimeout(resolve, 10000));
     }
